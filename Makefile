@@ -1,7 +1,7 @@
 # Coffeetrix24 Makefile
 # Targets to setup Go, build, create a dedicated user, configure token, and run the app.
 
-SHELL := /bin/sh
+SHELL := /usr/bin/env bash
 APP_NAME := coffeetrix24
 APP_USER := coffeetrix
 BIN_DIR := bin
@@ -65,25 +65,24 @@ install-go:
 	@if command -v go >/dev/null 2>&1; then \
 		echo "Go already installed: $$(go version)"; \
 	else \
-		case "$(UNAME_S)" in \
-			Darwin) \
-				if command -v brew >/dev/null 2>&1; then \
-					echo "Installing Go via Homebrew..."; \
-					brew update && brew install go; \
-				else \
-					echo "Homebrew not found. Install Go from https://go.dev/dl/ or install Homebrew: https://brew.sh"; exit 1; \
-				fi ;; \
-			Linux) \
-				# Try distro package first (may be old)
-				if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y golang-go || true; \
-				elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y golang || true; \
-				elif command -v yum >/dev/null 2>&1; then sudo yum install -y golang || true; \
-				elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm go || true; \
-				elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y go || true; \
-				fi; \
-				: ;; \
-			*) echo "Unsupported OS: $(UNAME_S). Install Go from https://go.dev/dl/"; exit 1 ;; \
-		esac; \
+		if [[ "$(UNAME_S)" == "Darwin" ]]; then \
+			if command -v brew >/dev/null 2>&1; then \
+				echo "Installing Go via Homebrew..."; \
+				brew update && brew install go; \
+			else \
+				echo "Homebrew not found. Install Go from https://go.dev/dl/ or install Homebrew: https://brew.sh"; exit 1; \
+			fi; \
+		elif [[ "$(UNAME_S)" == "Linux" ]]; then \
+			if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y golang-go || true; \
+			elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y golang || true; \
+			elif command -v yum >/dev/null 2>&1; then sudo yum install -y golang || true; \
+			elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm go || true; \
+			elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y go || true; \
+			else echo "Unsupported Linux package manager. Install Go from https://go.dev/dl/"; exit 1; \
+			fi; \
+		else \
+			echo "Unsupported OS: $(UNAME_S). Install Go from https://go.dev/dl/"; exit 1; \
+		fi; \
 	fi
 
 # Install specific Go version if current is missing or too old
