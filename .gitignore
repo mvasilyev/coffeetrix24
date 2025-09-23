@@ -1,0 +1,33 @@
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go build artifacts
+/bin/
+/dist/
+/build/
+coverage*/
+*.test
+*.out
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# SQLite databases and artifacts
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+/data/
+
+# Logs / Temp
+logs/
+*.log
+tmp/
+.cache/
