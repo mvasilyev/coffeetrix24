@@ -15,7 +15,7 @@ PID_FILE := $(RUN_DIR)/$(APP_NAME).pid
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
-.PHONY: help check-go install-go ensure-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean
+.PHONY: help check-go install-go ensure-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean build-linux-amd64-docker build-linux-386-docker build-linux-amd64-zig
 
 # Minimal and desired Go versions
 GO_MIN_VER := 1.18
@@ -23,6 +23,8 @@ GO_DESIRED_VER := 1.22.7
 
 # Resolve a usable Go binary (prefer /usr/local/go/bin/go if present)
 GO := $(shell if [ -x /usr/local/go/bin/go ]; then echo /usr/local/go/bin/go; elif command -v go >/dev/null 2>&1; then command -v go; else echo go; fi)
+DOCKER_IMAGE ?= golang:1.18-bullseye
+DOCKER_PLATFORM ?= linux/amd64
 
 check-go-version:
 	@if command -v $(GO) >/dev/null 2>&1; then \
@@ -48,6 +50,9 @@ help:
 	@echo "  test-run     - Run in test mode (immediate invite, 1 min window)"
 	@echo "  setup-run    - Install Go if missing, build, create user, configure, and run"
 	@echo "  clean        - Remove built binaries"
+	@echo "  build-linux-amd64-docker - Cross-compile linux/amd64 binary via Docker (CGO enabled)"
+	@echo "  build-linux-386-docker   - Cross-compile linux/386  binary via Docker (CGO enabled)"
+	@echo "  build-linux-amd64-zig    - Cross-compile linux/amd64 locally using zig cc (if available)"
 
 check-go:
 	@if command -v go >/dev/null 2>&1; then \
@@ -234,3 +239,24 @@ setup-run: ensure-go deps build create-user configure start-detached
 
 clean:
 	@rm -f $(BIN)
+
+# --- Cross-compile helpers ---
+# Build inside a Linux container so CGO (sqlite3) links against glibc.
+build-linux-amd64-docker:
+	@mkdir -p $(BIN_DIR)
+	@docker run --rm --platform=$(DOCKER_PLATFORM) -v "$$PWD":/src -w /src $(DOCKER_IMAGE) bash -lc \
+		"set -euo pipefail; apt-get update >/dev/null; apt-get install -y -qq build-essential >/dev/null; export PATH=/usr/local/go/bin:\$$PATH; CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -v -o $(BIN_DIR)/bot-linux-amd64 $(PKG)"
+	@echo "Built $(BIN_DIR)/bot-linux-amd64"
+
+build-linux-386-docker:
+	@mkdir -p $(BIN_DIR)
+	@docker run --rm --platform=$(DOCKER_PLATFORM) -v "$$PWD":/src -w /src $(DOCKER_IMAGE) bash -lc \
+		"set -euo pipefail; apt-get update >/dev/null; apt-get install -y -qq build-essential gcc-multilib >/dev/null; export PATH=/usr/local/go/bin:\$$PATH; CGO_ENABLED=1 GOOS=linux GOARCH=386 go build -v -o $(BIN_DIR)/bot-linux-386 $(PKG)"
+	@echo "Built $(BIN_DIR)/bot-linux-386"
+
+# Optional: local cross-compile using zig cc (no Docker). Requires 'zig' installed.
+build-linux-amd64-zig:
+	@command -v zig >/dev/null 2>&1 || { echo "zig not found. Install zig or use build-linux-amd64-docker"; exit 1; }
+	@mkdir -p $(BIN_DIR)
+	@env CC="zig cc -target x86_64-linux-gnu" CXX="zig c++ -target x86_64-linux-gnu" CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(GO) build -o $(BIN_DIR)/bot-linux-amd64 $(PKG)
+	@echo "Built $(BIN_DIR)/bot-linux-amd64 (zig)"
