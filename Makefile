@@ -18,7 +18,7 @@ UNAME_M := $(shell uname -m)
 .PHONY: help check-go install-go ensure-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean
 
 # Minimal and desired Go versions
-GO_MIN_VER := 1.22
+GO_MIN_VER := 1.18
 GO_DESIRED_VER := 1.22.7
 
 # Resolve a usable Go binary (prefer /usr/local/go/bin/go if present)
@@ -83,38 +83,30 @@ install-go:
 
 # Install specific Go version if current is missing or too old
 ensure-go:
-	@OK=1; \
-	if ! command -v $(GO) >/dev/null 2>&1; then OK=0; fi; \
-	if [ $$OK -eq 1 ]; then \
+	@# Check current Go and compare with minimal requirement
+	@if command -v $(GO) >/dev/null 2>&1; then \
 		CUR=$$($(GO) env GOVERSION | sed 's/go//'); \
 		REQ=$(GO_MIN_VER); \
 		awk -v v1=$$CUR -v v2=$$REQ 'BEGIN { split(v1,a,"."); split(v2,b,"."); if (a[1]<b[1] || (a[1]==b[1] && a[2]<b[2])) exit 1; else exit 0; }'; \
-		if [ $$? -ne 0 ]; then OK=0; fi; \
+		if [ $$? -eq 0 ]; then echo "Go OK: $$($(GO) version)"; exit 0; fi; \
 	fi; \
-	if [ $$OK -eq 1 ]; then \
-		echo "Go OK: $$($(GO) version)"; \
-		exit 0; \
+	# Install or upgrade Go
+	if [ "$(UNAME_S)" = "Darwin" ]; then \
+		if command -v brew >/dev/null 2>&1; then echo "Installing/Upgrading Go via Homebrew..."; brew update && (brew install go || brew upgrade go) || true; else echo "Install Go from https://go.dev/dl/ or install Homebrew: https://brew.sh"; exit 1; fi; \
+	elif [ "$(UNAME_S)" = "Linux" ]; then \
+		ARCH=$$(uname -m); \
+		if [ "$$ARCH" = "x86_64" ]; then GO_DL_ARCH=amd64; \
+		elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then GO_DL_ARCH=arm64; \
+		elif [ "$$ARCH" = "armv7l" ]; then GO_DL_ARCH=armv6l; \
+		else echo "Unsupported ARCH: $$ARCH"; exit 1; fi; \
+		URL=https://go.dev/dl/go$(GO_DESIRED_VER).linux-$$GO_DL_ARCH.tar.gz; \
+		echo "Installing Go $(GO_DESIRED_VER) from $$URL"; \
+		sudo rm -rf /usr/local/go; \
+		curl -fsSL $$URL | sudo tar -C /usr/local -xzf -; \
+	else \
+		echo "Unsupported OS: $(UNAME_S)"; exit 1; \
 	fi; \
-	case "$(UNAME_S)" in \
-		Darwin) \
-			if command -v brew >/dev/null 2>&1; then echo "Upgrading Go via Homebrew..."; brew update && brew upgrade go || true; fi ;; \
-		Linux) \
-			# Install from official tarball to /usr/local/go
-			case "$(UNAME_M)" in \
-				x86_64) GO_DL_ARCH=amd64 ;; \
-				arm64|aarch64) GO_DL_ARCH=arm64 ;; \
-				armv7l) GO_DL_ARCH=armv6l ;; \
-				*) echo "Unsupported ARCH: $(UNAME_M)"; exit 1 ;; \
-			esac; \
-			GO_DL_OS=linux; \
-			URL=https://go.dev/dl/go$(GO_DESIRED_VER).$$GO_DL_OS-$$GO_DL_ARCH.tar.gz; \
-			echo "Installing Go $(GO_DESIRED_VER) from $$URL"; \
-			sudo rm -rf /usr/local/go; \
-			curl -fsSL $$URL | sudo tar -C /usr/local -xzf -; \
-			;; \
-		*) echo "Unsupported OS: $(UNAME_S)"; exit 1 ;; \
-	esac; \
-	echo "Go installed: $$(/usr/local/go/bin/go version)";
+	echo "Go installed: $$(/usr/local/go/bin/go version)"
 
 $(BIN):
 	@mkdir -p $(BIN_DIR) $(dir $(DB_PATH)) $(LOG_DIR) $(RUN_DIR)
