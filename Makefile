@@ -118,8 +118,19 @@ ensure-go:
 
 $(BIN):
 	@mkdir -p $(BIN_DIR) $(dir $(DB_PATH)) $(LOG_DIR) $(RUN_DIR)
-	@echo "Building for host: GOOS=$$($(GO) env GOOS) GOARCH=$$($(GO) env GOARCH)"
-	@CGO_ENABLED=0 $(GO) build -o $(BIN) $(PKG)
+	@echo "Building for host: GOOS=$$($(GO) env GOOS) GOARCH=$$($(GO) env GOARCH) (CGO enabled)"
+	@if [ "$(UNAME_S)" = "Linux" ]; then \
+		if ! command -v gcc >/dev/null 2>&1; then \
+			echo "Installing build tools (requires sudo)..."; \
+			if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y build-essential; \
+			elif command -v dnf >/dev/null 2>&1; then sudo dnf groupinstall -y "Development Tools" || true; \
+			elif command -v yum >/dev/null 2>&1; then sudo yum groupinstall -y "Development Tools" || true; \
+			elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm base-devel; \
+			elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y gcc make; \
+			fi; \
+		fi; \
+	fi
+	@CGO_ENABLED=1 $(GO) build -o $(BIN) $(PKG)
 
 build: ensure-go deps $(BIN)
 

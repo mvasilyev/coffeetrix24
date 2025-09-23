@@ -1,15 +1,15 @@
 package db
 
 import (
-	"database/sql"
 	"context"
+	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	_ "modernc.org/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed schema.sql
@@ -21,7 +21,7 @@ type Store struct {
 
 func Open(path string) (*Store, error) {
 	dsn := fmt.Sprintf("file:%s?_busy_timeout=5000&_fk=1", path)
-	db, err := sqlx.Open("sqlite", dsn)
+	db, err := sqlx.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
