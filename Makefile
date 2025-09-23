@@ -16,6 +16,18 @@ UNAME_S := $(shell uname -s)
 
 .PHONY: help check-go install-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean
 
+GO_MIN_VER := 1.20
+
+check-go-version:
+	@if command -v go >/dev/null 2>&1; then \
+		VER=$$(go env GOVERSION | sed 's/go//'); \
+		REQ=$(GO_MIN_VER); \
+		awk -v v1=$$VER -v v2=$$REQ 'BEGIN { split(v1,a,"."); split(v2,b,"."); if (a[1]<b[1] || (a[1]==b[1] && a[2]<b[2])) exit 1; else exit 0; }'; \
+		if [ $$? -ne 0 ]; then echo "Go $$VER < $(GO_MIN_VER). Please upgrade Go (https://go.dev/dl/)."; exit 1; fi; \
+	else \
+		echo "Go not found"; exit 1; \
+	fi
+
 help:
 	@echo "Usage: make <target>"
 	@echo "Targets:"
@@ -73,7 +85,7 @@ $(BIN):
 	@echo "Building for host: GOOS=$$(go env GOOS) GOARCH=$$(go env GOARCH)"
 	@CGO_ENABLED=0 go build -o $(BIN) $(PKG)
 
-build: check-go deps $(BIN)
+build: check-go check-go-version deps $(BIN)
 
 deps:
 	@go mod tidy
