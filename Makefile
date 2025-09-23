@@ -13,17 +13,23 @@ RUN_DIR := run
 PID_FILE := $(RUN_DIR)/$(APP_NAME).pid
 
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
-.PHONY: help check-go install-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean
+.PHONY: help check-go install-go ensure-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean
 
-GO_MIN_VER := 1.20
+# Minimal and desired Go versions
+GO_MIN_VER := 1.22
+GO_DESIRED_VER := 1.22.7
+
+# Resolve a usable Go binary (prefer /usr/local/go/bin/go if present)
+GO := $(shell if [ -x /usr/local/go/bin/go ]; then echo /usr/local/go/bin/go; elif command -v go >/dev/null 2>&1; then command -v go; else echo go; fi)
 
 check-go-version:
-	@if command -v go >/dev/null 2>&1; then \
-		VER=$$(go env GOVERSION | sed 's/go//'); \
+	@if command -v $(GO) >/dev/null 2>&1; then \
+		VER=$$($(GO) env GOVERSION | sed 's/go//'); \
 		REQ=$(GO_MIN_VER); \
 		awk -v v1=$$VER -v v2=$$REQ 'BEGIN { split(v1,a,"."); split(v2,b,"."); if (a[1]<b[1] || (a[1]==b[1] && a[2]<b[2])) exit 1; else exit 0; }'; \
-		if [ $$? -ne 0 ]; then echo "Go $$VER < $(GO_MIN_VER). Please upgrade Go (https://go.dev/dl/)."; exit 1; fi; \
+		if [ $$? -ne 0 ]; then echo "Go $$VER < $(GO_MIN_VER)."; exit 1; fi; \
 	else \
 		echo "Go not found"; exit 1; \
 	fi
@@ -63,32 +69,62 @@ install-go:
 					echo "Homebrew not found. Install Go from https://go.dev/dl/ or install Homebrew: https://brew.sh"; exit 1; \
 				fi ;; \
 			Linux) \
-				if command -v apt-get >/dev/null 2>&1; then \
-					sudo apt-get update && sudo apt-get install -y golang-go; \
-				elif command -v dnf >/dev/null 2>&1; then \
-					sudo dnf install -y golang; \
-				elif command -v yum >/dev/null 2>&1; then \
-					sudo yum install -y golang; \
-				elif command -v pacman >/dev/null 2>&1; then \
-					sudo pacman -Sy --noconfirm go; \
-				elif command -v zypper >/dev/null 2>&1; then \
-					sudo zypper install -y go; \
-				else \
-					echo "Unsupported package manager. Install Go from https://go.dev/dl/"; exit 1; \
-				fi ;; \
+				# Try distro package first (may be old)
+				if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y golang-go || true; \
+				elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y golang || true; \
+				elif command -v yum >/dev/null 2>&1; then sudo yum install -y golang || true; \
+				elif command -v pacman >/dev/null 2>&1; then sudo pacman -Sy --noconfirm go || true; \
+				elif command -v zypper >/dev/null 2>&1; then sudo zypper install -y go || true; \
+				fi; \
+				: ;; \
 			*) echo "Unsupported OS: $(UNAME_S). Install Go from https://go.dev/dl/"; exit 1 ;; \
 		esac; \
 	fi
 
+# Install specific Go version if current is missing or too old
+ensure-go:
+	@OK=1; \
+	if ! command -v $(GO) >/dev/null 2>&1; then OK=0; fi; \
+	if [ $$OK -eq 1 ]; then \
+		CUR=$$($(GO) env GOVERSION | sed 's/go//'); \
+		REQ=$(GO_MIN_VER); \
+		awk -v v1=$$CUR -v v2=$$REQ 'BEGIN { split(v1,a,"."); split(v2,b,"."); if (a[1]<b[1] || (a[1]==b[1] && a[2]<b[2])) exit 1; else exit 0; }'; \
+		if [ $$? -ne 0 ]; then OK=0; fi; \
+	fi; \
+	if [ $$OK -eq 1 ]; then \
+		echo "Go OK: $$($(GO) version)"; \
+		exit 0; \
+	fi; \
+	case "$(UNAME_S)" in \
+		Darwin) \
+			if command -v brew >/dev/null 2>&1; then echo "Upgrading Go via Homebrew..."; brew update && brew upgrade go || true; fi ;; \
+		Linux) \
+			# Install from official tarball to /usr/local/go
+			case "$(UNAME_M)" in \
+				x86_64) GO_DL_ARCH=amd64 ;; \
+				arm64|aarch64) GO_DL_ARCH=arm64 ;; \
+				armv7l) GO_DL_ARCH=armv6l ;; \
+				*) echo "Unsupported ARCH: $(UNAME_M)"; exit 1 ;; \
+			esac; \
+			GO_DL_OS=linux; \
+			URL=https://go.dev/dl/go$(GO_DESIRED_VER).$$GO_DL_OS-$$GO_DL_ARCH.tar.gz; \
+			echo "Installing Go $(GO_DESIRED_VER) from $$URL"; \
+			sudo rm -rf /usr/local/go; \
+			curl -fsSL $$URL | sudo tar -C /usr/local -xzf -; \
+			;; \
+		*) echo "Unsupported OS: $(UNAME_S)"; exit 1 ;; \
+	esac; \
+	echo "Go installed: $$(/usr/local/go/bin/go version)";
+
 $(BIN):
 	@mkdir -p $(BIN_DIR) $(dir $(DB_PATH)) $(LOG_DIR) $(RUN_DIR)
-	@echo "Building for host: GOOS=$$(go env GOOS) GOARCH=$$(go env GOARCH)"
-	@CGO_ENABLED=0 go build -o $(BIN) $(PKG)
+	@echo "Building for host: GOOS=$$($(GO) env GOOS) GOARCH=$$($(GO) env GOARCH)"
+	@CGO_ENABLED=0 $(GO) build -o $(BIN) $(PKG)
 
-build: check-go check-go-version deps $(BIN)
+build: ensure-go deps $(BIN)
 
 deps:
-	@go mod tidy
+	@$(GO) mod tidy
 
 create-user:
 	@if id -u $(APP_USER) >/dev/null 2>&1; then \
@@ -189,9 +225,9 @@ status:
 		echo "Not running (no PID file)."; \
 	fi
 
-setup: install-go deps build create-user configure
+setup: ensure-go deps build create-user configure
 
-setup-run: install-go deps build create-user configure start-detached
+setup-run: ensure-go deps build create-user configure start-detached
 
 clean:
 	@rm -f $(BIN)
