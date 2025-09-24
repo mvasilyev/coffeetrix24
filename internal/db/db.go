@@ -137,7 +137,9 @@ func (s *Store) CreateOrGetTodaySession(chatID int64, date string, deadline time
 }
 
 func isLockedError(err error) bool {
-	if err == nil { return false }
+	if err == nil {
+		return false
+	}
 	if se, ok := err.(sqlite3.Error); ok {
 		return se.Code == sqlite3.ErrBusy || se.Code == sqlite3.ErrLocked
 	}
@@ -145,14 +147,18 @@ func isLockedError(err error) bool {
 	return contains(msg, "database is locked") || contains(msg, "database is busy")
 }
 
-func contains(haystack, needle string) bool { return len(haystack) >= len(needle) && ( // simple fast path
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && ( // simple fast path
 	// fallback to strings.Contains but avoiding import to keep deps minimal
-	func() bool { return indexOf(haystack, needle) >= 0 }() ) }
+	func() bool { return indexOf(haystack, needle) >= 0 }())
+}
 
 // naive substring search (to avoid importing strings just for Contains)
 func indexOf(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub { return i }
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
 	}
 	return -1
 }
