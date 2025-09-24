@@ -6,11 +6,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	sqlite3 "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 //go:embed schema.sql
@@ -85,32 +84,17 @@ func (s *Store) UpsertChat(chatID int64, title string) error {
 }
 
 func (s *Store) CreateOrGetTodaySession(chatID int64, date string, deadline time.Time) (int64, error) {
-	// Attempt insert first
-	res, err := s.DB.Exec("INSERT INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadline.UTC())
-	if err == nil {
-		id, _ := res.LastInsertId()
-		return id, nil
+	// Idempotent creation pattern: try insert (ignored if exists), then ensure deadline populated/updated.
+	_, err := s.DB.Exec("INSERT OR IGNORE INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadline.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("insert or ignore daily_session failed (chat=%d date=%s): %w", chatID, date, err)
 	}
-
-	// Decide if this is a uniqueness conflict for (chat_id, session_date)
-	uniqueConflict := false
-	if se, ok := err.(sqlite3.Error); ok {
-		if se.Code == sqlite3.ErrConstraint { // any constraint for this insert realistically means UNIQUE conflict
-			uniqueConflict = true
-		}
-	} else if strings.Contains(strings.ToLower(err.Error()), "unique") { // fallback heuristic
-		uniqueConflict = true
-	}
-
-	if !uniqueConflict {
-		return 0, fmt.Errorf("create daily_session failed (chat=%d date=%s): %w", chatID, date, err)
-	}
-
-	// Fetch existing row
+	// Update deadline if row existed without it or earlier smaller value (best-effort; ignore error).
+	_, _ = s.DB.Exec("UPDATE daily_sessions SET signup_deadline=? WHERE chat_id=? AND session_date=? AND (signup_deadline IS NULL OR signup_deadline < ?)", deadline.UTC(), chatID, date, deadline.UTC())
 	var id int64
-	selectErr := s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
-	if selectErr != nil {
-		return 0, fmt.Errorf("unique conflict but existing row not found (chat=%d date=%s) insertErr=%v selectErr=%w", chatID, date, err, selectErr)
+	getErr := s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
+	if getErr != nil {
+		return 0, fmt.Errorf("select daily_session failed after insert-or-ignore (chat=%d date=%s): %w", chatID, date, getErr)
 	}
 	return id, nil
 }
