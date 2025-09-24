@@ -49,6 +49,7 @@ func parseDaily(t string) (int, int) {
 
 func (s *Scheduler) loopDaily(ctx context.Context) {
 	// Timer that re-reads settings every minute and reschedules if time changed.
+	log.Println("scheduler: loopDaily start")
 	getNext := func(hh, mm int, from time.Time) time.Time {
 		n := time.Date(from.Year(), from.Month(), from.Day(), hh, mm, 0, 0, time.UTC)
 		if !n.After(from) {
@@ -67,6 +68,7 @@ func (s *Scheduler) loopDaily(ctx context.Context) {
 	hh, mm := parseDaily(daily)
 	now := time.Now().UTC()
 	next := getNext(hh, mm, now)
+	log.Printf("scheduler: initial daily_time=%s parsed=%02d:%02d next=%s", daily, hh, mm, next.Format(time.RFC3339))
 	timer := time.NewTimer(time.Until(next))
 	defer func() {
 		if !timer.Stop() {
@@ -82,6 +84,7 @@ func (s *Scheduler) loopDaily(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+			log.Printf("scheduler: firing daily invite now=%s target=%02d:%02d nextWas=%s", time.Now().UTC().Format(time.RFC3339), hh, mm, next.Format(time.RFC3339))
 			if s.OnDailyInvite != nil {
 				s.OnDailyInvite()
 			}
@@ -104,6 +107,7 @@ func (s *Scheduler) loopDaily(ctx context.Context) {
 			newNext := getNext(h2, m2, time.Now().UTC())
 			// if scheduling changed, reset timer
 			if !newNext.Equal(next) {
+				log.Printf("scheduler: reschedule due to config change oldNext=%s newNext=%s", next.Format(time.RFC3339), newNext.Format(time.RFC3339))
 				next = newNext
 				if !timer.Stop() {
 					select {
@@ -112,12 +116,14 @@ func (s *Scheduler) loopDaily(ctx context.Context) {
 					}
 				}
 				timer = time.NewTimer(time.Until(next))
+				hh, mm = h2, m2
 			}
 		}
 	}
 }
 
 func (s *Scheduler) loopCloser(ctx context.Context) {
+	log.Printf("scheduler: loopCloser start interval=%s", s.CloseInterval)
 	for {
 		select {
 		case <-ctx.Done():
@@ -130,7 +136,10 @@ func (s *Scheduler) loopCloser(ctx context.Context) {
 				continue
 			}
 			if len(ids) > 0 && s.OnCloseSessions != nil {
+				log.Printf("scheduler: closing sessions ids=%v", ids)
 				s.OnCloseSessions(ids)
+			} else {
+				log.Printf("scheduler: closer tick no sessions time=%s", now.Format(time.RFC3339))
 			}
 		}
 	}
