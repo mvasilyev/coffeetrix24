@@ -18,7 +18,7 @@ type Bot struct {
 	API   *tgbotapi.BotAPI
 	Store *db.Store
 	// runtime options
-	TestMode bool
+	TestMode     bool
 	SignupWindow time.Duration
 }
 
@@ -68,11 +68,16 @@ func (b *Bot) onAddedToGroup(chatID int64, title string) {
 func (b *Bot) SendDailyInvites() {
 	// Send to all chats
 	rows, err := b.Store.DB.Queryx("SELECT chat_id FROM chats")
-	if err != nil { log.Println("daily send error:", err); return }
+	if err != nil {
+		log.Println("daily send error:", err)
+		return
+	}
 	defer rows.Close()
 	for rows.Next() {
 		var chatID int64
-		if err := rows.Scan(&chatID); err != nil { continue }
+		if err := rows.Scan(&chatID); err != nil {
+			continue
+		}
 		b.sendInviteToChat(chatID)
 	}
 }
@@ -85,10 +90,15 @@ func (b *Bot) sendInviteToChat(chatID int64) {
 		return
 	}
 	window := b.SignupWindow
-	if window == 0 { window = 30 * time.Minute }
+	if window == 0 {
+		window = 30 * time.Minute
+	}
 	deadline := now.Add(window)
 	sessionID, err := b.Store.CreateOrGetTodaySession(chatID, date, deadline)
-	if err != nil { log.Println("session create error:", err); return }
+	if err != nil {
+		log.Printf("session create error chat=%d date=%s deadline=%s err=%v", chatID, date, deadline.Format(time.RFC3339), err)
+		return
+	}
 
 	btn := tgbotapi.NewInlineKeyboardButtonData(messages.ImInButton, fmt.Sprintf("join:%d", sessionID))
 	kb := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btn))
@@ -107,7 +117,9 @@ func (b *Bot) onCallback(cb *tgbotapi.CallbackQuery) {
 		_, _ = fmt.Sscanf(data, "join:%d", &sessionID)
 		user := cb.From
 		name := strings.TrimSpace(strings.Join([]string{user.FirstName, user.LastName}, " "))
-		if name == "" { name = user.UserName }
+		if name == "" {
+			name = user.UserName
+		}
 		// prevent late signups
 		open, err := b.Store.SessionOpen(sessionID, time.Now())
 		if err == nil && !open {
@@ -126,9 +138,13 @@ func (b *Bot) onCallback(cb *tgbotapi.CallbackQuery) {
 
 func (b *Bot) CloseAndPublish(sessionID int64) {
 	chatID, _, err := b.Store.GetSessionInfo(sessionID)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	parts, err := b.Store.GetParticipants(sessionID)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	// In test mode, if only one participant, add few fake participants
 	if b.TestMode && len(parts) == 1 {
 		fakes := []db.Participant{
@@ -151,8 +167,12 @@ func (b *Bot) CloseAndPublish(sessionID int64) {
 	users := make([]logic.User, 0, len(parts))
 	for _, p := range parts {
 		name := p.DisplayName
-		if name == "" && p.Username != "" { name = "@" + p.Username }
-		if name == "" { name = fmt.Sprintf("id:%d", p.UserID) }
+		if name == "" && p.Username != "" {
+			name = "@" + p.Username
+		}
+		if name == "" {
+			name = fmt.Sprintf("id:%d", p.UserID)
+		}
 		users = append(users, logic.User{ID: p.UserID, Name: name})
 	}
 	groups := logic.MakeGroups(users)
@@ -161,7 +181,9 @@ func (b *Bot) CloseAndPublish(sessionID int64) {
 	for i, g := range groups {
 		sb.WriteString(fmt.Sprintf("Группа %d: ", i+1))
 		for j, u := range g.Members {
-			if j > 0 { sb.WriteString(", ") }
+			if j > 0 {
+				sb.WriteString(", ")
+			}
 			sb.WriteString(u.Name)
 		}
 		sb.WriteString("\n")

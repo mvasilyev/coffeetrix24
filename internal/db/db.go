@@ -93,10 +93,22 @@ func (s *Store) CreateOrGetTodaySession(chatID int64, date string, deadline time
 	_, _ = s.DB.Exec("UPDATE daily_sessions SET signup_deadline=? WHERE chat_id=? AND session_date=? AND (signup_deadline IS NULL OR signup_deadline < ?)", deadline.UTC(), chatID, date, deadline.UTC())
 	var id int64
 	getErr := s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
-	if getErr != nil {
-		return 0, fmt.Errorf("select daily_session failed after insert-or-ignore (chat=%d date=%s): %w", chatID, date, getErr)
+	if getErr == nil {
+		return id, nil
 	}
-	return id, nil
+	if errors.Is(getErr, sql.ErrNoRows) {
+		// Unexpected: try explicit insert (may surface real constraint error)
+		res, insErr := s.DB.Exec("INSERT INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadline.UTC())
+		if insErr == nil {
+			id2, _ := res.LastInsertId()
+			return id2, nil
+		}
+		// Gather diagnostics
+		var cntSameDate int
+		_ = s.DB.Get(&cntSameDate, "SELECT COUNT(1) FROM daily_sessions WHERE session_date=?", date)
+		return 0, fmt.Errorf("session missing after insert-or-ignore retryFailed chat=%d date=%s rowsForDate=%d retryErr=%v", chatID, date, cntSameDate, insErr)
+	}
+	return 0, fmt.Errorf("select daily_session failed after insert-or-ignore (chat=%d date=%s): %w", chatID, date, getErr)
 }
 
 func (s *Store) SetInviteMessageID(sessionID int64, msgID int) error {
