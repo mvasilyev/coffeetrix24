@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
 //go:embed schema.sql
@@ -20,7 +20,7 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_busy_timeout=5000&_fk=1", path)
+	dsn := fmt.Sprintf("file:%s?_busy_timeout=10000&_fk=1", path)
 	db, err := sqlx.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
@@ -28,6 +28,13 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
+	// SQLite tuning for concurrency: WAL allows readers during writer; reduce sync for speed.
+	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
+	_, _ = db.Exec("PRAGMA synchronous=NORMAL;")
+	// Limit writers to avoid many concurrent write attempts.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 
 	st := &Store{DB: db}
 	if err := st.migrate(); err != nil {
@@ -84,31 +91,70 @@ func (s *Store) UpsertChat(chatID int64, title string) error {
 }
 
 func (s *Store) CreateOrGetTodaySession(chatID int64, date string, deadline time.Time) (int64, error) {
-	// Idempotent creation pattern: try insert (ignored if exists), then ensure deadline populated/updated.
-	_, err := s.DB.Exec("INSERT OR IGNORE INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadline.UTC())
-	if err != nil {
-		return 0, fmt.Errorf("insert or ignore daily_session failed (chat=%d date=%s): %w", chatID, date, err)
-	}
-	// Update deadline if row existed without it or earlier smaller value (best-effort; ignore error).
-	_, _ = s.DB.Exec("UPDATE daily_sessions SET signup_deadline=? WHERE chat_id=? AND session_date=? AND (signup_deadline IS NULL OR signup_deadline < ?)", deadline.UTC(), chatID, date, deadline.UTC())
-	var id int64
-	getErr := s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
-	if getErr == nil {
-		return id, nil
-	}
-	if errors.Is(getErr, sql.ErrNoRows) {
-		// Unexpected: try explicit insert (may surface real constraint error)
-		res, insErr := s.DB.Exec("INSERT INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadline.UTC())
-		if insErr == nil {
-			id2, _ := res.LastInsertId()
-			return id2, nil
+	deadlineUTC := deadline.UTC()
+	// Retry loop for SQLITE_BUSY / locked situations.
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := s.DB.Exec("INSERT OR IGNORE INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadlineUTC)
+		if err != nil {
+			if isLockedError(err) {
+				lastErr = err
+				time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+				continue
+			}
+			return 0, fmt.Errorf("insert or ignore daily_session failed (chat=%d date=%s): %w", chatID, date, err)
 		}
-		// Gather diagnostics
-		var cntSameDate int
-		_ = s.DB.Get(&cntSameDate, "SELECT COUNT(1) FROM daily_sessions WHERE session_date=?", date)
-		return 0, fmt.Errorf("session missing after insert-or-ignore retryFailed chat=%d date=%s rowsForDate=%d retryErr=%v", chatID, date, cntSameDate, insErr)
+		// Update deadline (best-effort)
+		_, _ = s.DB.Exec("UPDATE daily_sessions SET signup_deadline=? WHERE chat_id=? AND session_date=? AND (signup_deadline IS NULL OR signup_deadline < ?)", deadlineUTC, chatID, date, deadlineUTC)
+		var id int64
+		getErr := s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
+		if getErr == nil {
+			return id, nil
+		}
+		if errors.Is(getErr, sql.ErrNoRows) {
+			// Rare race; retry insert explicitly
+			res, insErr := s.DB.Exec("INSERT INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadlineUTC)
+			if insErr == nil {
+				id2, _ := res.LastInsertId()
+				return id2, nil
+			}
+			if isLockedError(insErr) {
+				lastErr = insErr
+				time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+				continue
+			}
+			return 0, fmt.Errorf("explicit insert after no-rows failed chat=%d date=%s: %v", chatID, date, insErr)
+		}
+		if isLockedError(getErr) {
+			lastErr = getErr
+			time.Sleep(time.Duration(attempt*100) * time.Millisecond)
+			continue
+		}
+		return 0, fmt.Errorf("select daily_session failed chat=%d date=%s: %w", chatID, date, getErr)
 	}
-	return 0, fmt.Errorf("select daily_session failed after insert-or-ignore (chat=%d date=%s): %w", chatID, date, getErr)
+	return 0, fmt.Errorf("create/get daily_session exhausted retries chat=%d date=%s lastErr=%v", chatID, date, lastErr)
+}
+
+func isLockedError(err error) bool {
+	if err == nil { return false }
+	if se, ok := err.(sqlite3.Error); ok {
+		return se.Code == sqlite3.ErrBusy || se.Code == sqlite3.ErrLocked
+	}
+	msg := err.Error()
+	return contains(msg, "database is locked") || contains(msg, "database is busy")
+}
+
+func contains(haystack, needle string) bool { return len(haystack) >= len(needle) && ( // simple fast path
+	// fallback to strings.Contains but avoiding import to keep deps minimal
+	func() bool { return indexOf(haystack, needle) >= 0 }() ) }
+
+// naive substring search (to avoid importing strings just for Contains)
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub { return i }
+	}
+	return -1
 }
 
 func (s *Store) SetInviteMessageID(sessionID int64, msgID int) error {
