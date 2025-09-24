@@ -6,10 +6,11 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
 //go:embed schema.sql
@@ -84,16 +85,34 @@ func (s *Store) UpsertChat(chatID int64, title string) error {
 }
 
 func (s *Store) CreateOrGetTodaySession(chatID int64, date string, deadline time.Time) (int64, error) {
-	// Try insert
+	// Attempt insert first
 	res, err := s.DB.Exec("INSERT INTO daily_sessions (chat_id, session_date, signup_deadline) VALUES (?, ?, ?)", chatID, date, deadline.UTC())
 	if err == nil {
 		id, _ := res.LastInsertId()
 		return id, nil
 	}
-	// Fetch existing
+
+	// Decide if this is a uniqueness conflict for (chat_id, session_date)
+	uniqueConflict := false
+	if se, ok := err.(sqlite3.Error); ok {
+		if se.Code == sqlite3.ErrConstraint { // any constraint for this insert realistically means UNIQUE conflict
+			uniqueConflict = true
+		}
+	} else if strings.Contains(strings.ToLower(err.Error()), "unique") { // fallback heuristic
+		uniqueConflict = true
+	}
+
+	if !uniqueConflict {
+		return 0, fmt.Errorf("create daily_session failed (chat=%d date=%s): %w", chatID, date, err)
+	}
+
+	// Fetch existing row
 	var id int64
-	err = s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
-	return id, err
+	selectErr := s.DB.Get(&id, "SELECT id FROM daily_sessions WHERE chat_id=? AND session_date=?", chatID, date)
+	if selectErr != nil {
+		return 0, fmt.Errorf("unique conflict but existing row not found (chat=%d date=%s) insertErr=%v selectErr=%w", chatID, date, err, selectErr)
+	}
+	return id, nil
 }
 
 func (s *Store) SetInviteMessageID(sessionID int64, msgID int) error {
@@ -157,9 +176,22 @@ func (s *Store) GetParticipants(sessionID int64) ([]Participant, error) {
 	return res, rows.Err()
 }
 
+// HasAnySessionForDate returns true if there is at least one session for the given date (YYYY-MM-DD).
+func (s *Store) HasAnySessionForDate(date string) (bool, error) {
+	var x int
+	err := s.DB.Get(&x, "SELECT 1 FROM daily_sessions WHERE session_date=? LIMIT 1", date)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 type Participant struct {
-	UserID     int64
-	Username   string
+	UserID      int64
+	Username    string
 	DisplayName string
 }
 
@@ -168,14 +200,27 @@ func (s *Store) CloseSession(id int64) error {
 	return err
 }
 
+// CountSessionsByDate returns number of daily_sessions rows for a date.
+func (s *Store) CountSessionsByDate(date string) (int, error) {
+	var c int
+	err := s.DB.Get(&c, "SELECT COUNT(1) FROM daily_sessions WHERE session_date=?", date)
+	return c, err
+}
+
 // SessionOpen checks if session is not closed and deadline not passed at given time.
 func (s *Store) SessionOpen(id int64, now time.Time) (bool, error) {
 	var closed int
 	var deadline time.Time
 	err := s.DB.QueryRowx("SELECT closed, COALESCE(signup_deadline, CURRENT_TIMESTAMP) FROM daily_sessions WHERE id=?", id).Scan(&closed, &deadline)
-	if err != nil { return false, err }
-	if closed != 0 { return false, nil }
-	if now.UTC().After(deadline.UTC()) { return false, nil }
+	if err != nil {
+		return false, err
+	}
+	if closed != 0 {
+		return false, nil
+	}
+	if now.UTC().After(deadline.UTC()) {
+		return false, nil
+	}
 	return true, nil
 }
 
