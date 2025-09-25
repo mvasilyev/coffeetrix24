@@ -15,7 +15,7 @@ PID_FILE := $(RUN_DIR)/$(APP_NAME).pid
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
-.PHONY: help check-go install-go ensure-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached setup setup-run clean build-linux-amd64-docker build-linux-386-docker build-linux-amd64-zig
+.PHONY: help check-go install-go ensure-go deps build create-user configure run start run-detached start-detached stop status test-run test-run-detached once once-detached set-time setup setup-run clean build-linux-amd64-docker build-linux-386-docker build-linux-amd64-zig
 
 # Minimal and desired Go versions
 GO_MIN_VER := 1.18
@@ -48,6 +48,8 @@ help:
 	@echo "  run          - Run app as '$(APP_USER)' using .env"
 	@echo "  start        - Same as run"
 	@echo "  test-run     - Run in test mode (immediate invite, 1 min window)"
+	@echo "  once         - Single immediate invite run (--once-invite) and exit"
+	@echo "  set-time     - Change daily_time (usage: make set-time TIME=HH:MM)"
 	@echo "  setup-run    - Install Go if missing, build, create user, configure, and run"
 	@echo "  clean        - Remove built binaries"
 	@echo "  build-linux-amd64-docker - Cross-compile linux/amd64 binary via Docker (CGO enabled)"
@@ -207,6 +209,28 @@ test-run-detached:
 	@mkdir -p $(LOG_DIR) $(RUN_DIR)
 	@sudo -u $(APP_USER) sh -c 'nohup env TELEGRAM_BOT_TOKEN="$$(grep -E "^TELEGRAM_BOT_TOKEN=" .env | sed "s/.*=//")" DATABASE_PATH="$(DB_PATH)" $(BIN) --test >> $(LOG_DIR)/app.log 2>&1 & echo $$! > $(PID_FILE)'
 	@echo "Started (test). PID stored in $(PID_FILE). Logs: $(LOG_DIR)/app.log"
+
+once:
+	@echo "Running one-off invite trigger (--once-invite) as '$(APP_USER)'..."
+	@if [ -z "$(TIME)" ]; then :; fi # allow optional TIME override
+	@if [ ! -f $(BIN) ]; then echo "Binary not found. Run 'make build' first."; exit 1; fi
+	@if [ ! -f .env ]; then echo ".env not found. Run 'make configure' first."; exit 1; fi
+	@sudo -u $(APP_USER) env TELEGRAM_BOT_TOKEN="$$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | sed 's/.*=//')" DATABASE_PATH="$(DB_PATH)" $(BIN) --once-invite
+
+once-detached:
+	@echo "Starting detached one-off invite (--once-invite) as '$(APP_USER)' (will exit after sending)..."
+	@if [ ! -f $(BIN) ]; then echo "Binary not found. Run 'make build' first."; exit 1; fi
+	@if [ ! -f .env ]; then echo ".env not found. Run 'make configure' first."; exit 1; fi
+	@mkdir -p $(LOG_DIR)
+	@sudo -u $(APP_USER) sh -c 'nohup env TELEGRAM_BOT_TOKEN="$$(grep -E "^TELEGRAM_BOT_TOKEN=" .env | sed "s/.*=//")" DATABASE_PATH="$(DB_PATH)" $(BIN) --once-invite >> $(LOG_DIR)/app.log 2>&1 & echo One-off started PID $$!;'
+
+set-time:
+	@if [ -z "$(TIME)" ]; then echo "Usage: make set-time TIME=HH:MM"; exit 1; fi
+	@if ! [[ "$(TIME)" =~ ^[0-9]{2}:[0-9]{2}$ ]]; then echo "Invalid TIME format (expected HH:MM)"; exit 1; fi
+	@if ! command -v sqlite3 >/dev/null 2>&1; then echo "sqlite3 CLI not found"; exit 1; fi
+	@echo "Setting daily_time to $(TIME)"
+	@sqlite3 $(DB_PATH) "INSERT INTO settings (id,daily_time) VALUES (1,'$(TIME)') ON CONFLICT(id) DO UPDATE SET daily_time='$(TIME)';"
+	@echo "New value:"; sqlite3 $(DB_PATH) "SELECT daily_time FROM settings WHERE id=1;"
 
 stop:
 	@if [ -f $(PID_FILE) ]; then \

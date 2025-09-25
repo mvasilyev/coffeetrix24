@@ -66,28 +66,39 @@ func (b *Bot) onAddedToGroup(chatID int64, title string) {
 }
 
 func (b *Bot) SendDailyInvites() {
-	// Send to all chats
+	start := time.Now()
+	log.Println("daily: begin scanning chats for invites")
 	rows, err := b.Store.DB.Queryx("SELECT chat_id FROM chats")
 	if err != nil {
-		log.Println("daily send error:", err)
+		log.Println("daily: query chats error:", err)
 		return
 	}
 	defer rows.Close()
+	var total, sent, skipped int
 	for rows.Next() {
 		var chatID int64
 		if err := rows.Scan(&chatID); err != nil {
+			log.Println("daily: scan chat_id error:", err)
 			continue
 		}
-		b.sendInviteToChat(chatID)
+		total++
+		if b.sendInviteToChat(chatID) {
+			sent++
+		} else {
+			skipped++
+		}
 	}
+	log.Printf("daily: done chats=%d sent=%d skipped=%d elapsed=%s", total, sent, skipped, time.Since(start))
 }
 
-func (b *Bot) sendInviteToChat(chatID int64) {
+// sendInviteToChat returns true if it actually sent a new invite message.
+func (b *Bot) sendInviteToChat(chatID int64) bool {
 	now := time.Now().UTC()
 	date := now.Format("2006-01-02")
 	// если на сегодня уже отправляли приглашение (invite_message_id не NULL), не дублировать
 	if id, inviteID, err := b.Store.GetSessionByChatDate(chatID, date); err == nil && id != 0 && inviteID.Valid {
-		return
+		log.Printf("daily: skip existing invite chat=%d date=%s session=%d inviteMsgID=%d", chatID, date, id, inviteID.Int64)
+		return false
 	}
 	window := b.SignupWindow
 	if window == 0 {
@@ -97,7 +108,7 @@ func (b *Bot) sendInviteToChat(chatID int64) {
 	sessionID, err := b.Store.CreateOrGetTodaySession(chatID, date, deadline)
 	if err != nil {
 		log.Printf("session create error chat=%d date=%s deadline=%s err=%v", chatID, date, deadline.Format(time.RFC3339), err)
-		return
+		return false
 	}
 
 	btn := tgbotapi.NewInlineKeyboardButtonData(messages.ImInButton, fmt.Sprintf("join:%d", sessionID))
@@ -106,8 +117,14 @@ func (b *Bot) sendInviteToChat(chatID int64) {
 	msg.ReplyMarkup = kb
 	resp, err := b.API.Send(msg)
 	if err == nil {
-		_ = b.Store.SetInviteMessageID(sessionID, resp.MessageID)
+		if dbErr := b.Store.SetInviteMessageID(sessionID, resp.MessageID); dbErr != nil {
+			log.Printf("daily: failed to set invite_message_id chat=%d session=%d msg=%d err=%v", chatID, sessionID, resp.MessageID, dbErr)
+		}
+		log.Printf("daily: sent invite chat=%d session=%d msgID=%d deadline=%s", chatID, sessionID, resp.MessageID, deadline.Format(time.RFC3339))
+		return true
 	}
+	log.Printf("daily: telegram send failed chat=%d session=%d err=%v", chatID, sessionID, err)
+	return false
 }
 
 func (b *Bot) onCallback(cb *tgbotapi.CallbackQuery) {
